@@ -7,6 +7,11 @@ mkdir -p ./lakehouse
 mkdir -p ./minio/data
 mkdir -p ./clickhouse/data_import
 
+echo "Setting full access permissions..."
+sudo chmod -R 777 ./lakehouse
+sudo chmod -R 777 ./minio/data
+sudo chmod -R 777 ./clickhouse/data_import
+
 echo "Copying database setup files..."
 cp ./init-clickhouse.sh ./clickhouse
 chmod +x ./clickhouse/init-clickhouse.sh
@@ -32,12 +37,6 @@ for FILE in "${FILES[@]}"; do
     # Copy the TSV file to the target ClickHouse directory
     cp "$DATA_IMPORT_DIR/$FILE.tsv" "./clickhouse/$DATA_IMPORT_DIR/$FILE.tsv"
 done
-
-
-echo "Setting full access permissions..."
-sudo chmod -R 777 ./lakehouse
-sudo chmod -R 777 ./minio/data
-sudo chmod -R 777 ./clickhouse/data_import
 
 echo "Downloading Extra jars for iceberg"
 mkdir -p jars
