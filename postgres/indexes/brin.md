@@ -1,5 +1,3 @@
-# Source Code
-
 
 # [brin.c](https://github.com/postgres/postgres/blob/master/src/backend/access/brin/brin.c) File Methods Documentation
 
