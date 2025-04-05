@@ -1,3 +1,67 @@
+# PostgreSQL BRIN: Minmax vs Bloom Operator Classes
+
+In PostgreSQL's BRIN (Block Range Index) system, operator classes define how data is summarized within block ranges. Two notable types are:
+
+- **Minmax**: Stores minimum and maximum values per block.
+- **Bloom**: Uses Bloom filters to track value membership per block.
+
+## 🟦 BRIN with Minmax
+
+### How It Works
+BRIN indexes divide a table into block ranges and record the **minimum and maximum** values of the indexed column for each range.
+
+### Suitable For
+- Data with a strong correlation between the column value and its physical position in the table (e.g., time-series data).
+
+### Benefits
+- ✅ **Space Efficiency**: Much smaller than B-tree indexes.
+- ✅ **Fast Range Queries**: Efficiently skips blocks outside the query range.
+
+### Drawbacks
+- ❌ **Ineffective with Poor Correlation**: Wide ranges reduce filter precision.
+- ❌ **Sensitive to Outliers**: A few extreme values can reduce the index's usefulness.
+
+---
+
+## 🟪 BRIN with Bloom
+
+### How It Works
+Each block range stores a **Bloom filter**, a compact probabilistic structure that checks whether a value may exist in the block.
+
+### Suitable For
+- Data without strong ordering or correlation.
+- Scenarios requiring set membership checks.
+
+### Benefits
+- ✅ **Better for Unordered Data**: More robust with outliers.
+- ✅ **Supports Multiple Columns**: One index can handle several columns.
+
+### Drawbacks
+- ❌ **Larger Index Size**: Bloom filters are bigger than minmax summaries.
+- ❌ **False Positives**: May occasionally return false hits.
+
+---
+
+## ⚖️ Choosing Between Minmax and Bloom
+
+| Scenario                       | Use Minmax | Use Bloom |
+|-------------------------------|------------|-----------|
+| Data is physically ordered    | ✅         | ❌        |
+| Performing range queries      | ✅         | ❌        |
+| Need compact index            | ✅         | ❌        |
+| Data is unordered             | ❌         | ✅        |
+| Handling outliers             | ❌         | ✅        |
+| Set membership queries        | ❌         | ✅        |
+| Indexing multiple columns     | ❌         | ✅        |
+
+
+
+---
+
+> 📌 **Tip:** Choose the operator class that best aligns with your data’s structure and your query patterns.
+
+
+
 
 # [brin.c](https://github.com/postgres/postgres/blob/master/src/backend/access/brin/brin.c) File Methods Documentation
 
@@ -174,5 +238,8 @@ This file implements the BRIN (Block Range INdexes) index access method for Post
 
 # Reading further
 1. [Crunchy Blog - Postgres Indexing: When Does BRIN Win?](https://www.crunchydata.com/blog/postgres-indexing-when-does-brin-win)
-2. [pgconf.eu 2022 - BRIN improvements by Tomas Vondra, EDB](https://www.postgresql.eu/events/pgconfeu2022/sessions/session/3864/slides/348/brin-index-improvements-pgconfeu-2022.pdf)
-3. [BRIN source code - ReadME](https://github.com/postgres/postgres/blob/master/src/backend/access/brin/README)
+2. [Handling outliers in BRIN indexes with the new multi minmax operator class](https://www.youtube.com/watch?v=xr42hycwNiY)
+3. [When Good Correlation is Not Enough. How outliers can trick the optimizer into the wrong plan](https://hakibenita.com/postgresql-correlation-brin-multi-minmax)
+4. [pgconf.eu 2022 - BRIN improvements by Tomas Vondra, EDB](https://www.postgresql.eu/events/pgconfeu2022/sessions/session/3864/slides/348/brin-index-improvements-pgconfeu-2022.pdf)
+5. [WIP: BRIN bloom indexes - A comparison of brin minmax, bloom and b-tree indexes by author of bloom for BRIN](https://www.postgresql.org/message-id/5d78b774-7e9c-c94e-12cf-fef51cc89b1a@2ndquadrant.com)
+6. [BRIN source code - ReadME](https://github.com/postgres/postgres/blob/master/src/backend/access/brin/README)
