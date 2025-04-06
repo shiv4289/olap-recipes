@@ -1,6 +1,6 @@
 
 
-# Reading further
+# References
 1. [Crunchy Blog - Postgres Indexing: When Does BRIN Win?](https://www.crunchydata.com/blog/postgres-indexing-when-does-brin-win)
 2. [Handling outliers in BRIN indexes with the new multi minmax operator class](https://www.youtube.com/watch?v=xr42hycwNiY)
 3. [When Good Correlation is Not Enough. How outliers can trick the optimizer into the wrong plan](https://hakibenita.com/postgresql-correlation-brin-multi-minmax)
