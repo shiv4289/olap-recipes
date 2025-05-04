@@ -29,6 +29,7 @@ graph TD
     SPARK --> MINIO
     SPARK --> REST
     CLICKHOUSE --> MINIO
+    CLICKHOUSE --> REST
 ```
 
 #### Setup
@@ -183,6 +184,35 @@ You can query the count of rows using this spark sql query:
 SELECT COUNT(*) FROM demo.iceberg.trips;
 ```
 
+We will create another table called trips_unpartitioned for reference.
+
+```sql
+CREATE TABLE demo.iceberg.trips_unpartitioned (
+                                       trip_id             INT,
+                                       pickup_datetime     TIMESTAMP,
+                                       dropoff_datetime    TIMESTAMP,
+                                       pickup_longitude    DOUBLE,
+                                       pickup_latitude     DOUBLE,
+                                       dropoff_longitude   DOUBLE,
+                                       dropoff_latitude    DOUBLE,
+                                       passenger_count     INT,
+                                       trip_distance       FLOAT,
+                                       fare_amount         FLOAT,
+                                       extra               FLOAT,
+                                       tip_amount          FLOAT,
+                                       tolls_amount        FLOAT,
+                                       total_amount        FLOAT,
+                                       payment_type        STRING,
+                                       pickup_ntaname      STRING,
+                                       dropoff_ntaname     STRING
+) USING ICEBERG;
+```
+Insert into this iceberg table using parquet file ingested before
+```sql
+INSERT INTO demo.iceberg.trips_unpartitioned
+SELECT * FROM parquet.`s3a://lakehouse/clickhouse_generated/trips.parquet`;
+```
+
 ### Step 3: Querying iceberg tables from clickhouse
 
 Fire up clickhouse client
@@ -191,7 +221,29 @@ Fire up clickhouse client
 docker exec -it clickhouse clickhouse-client
 ```
 
+Turn on the experimental iceberg database 
+```sql
+set allow_experimental_database_iceberg=true;
+```
+Create a database for the same
+```sql
+CREATE DATABASE demo
+ENGINE = DataLakeCatalog('http://rest:8181/v1', 'admin', 'password')
+SETTINGS catalog_type = 'rest', storage_endpoint = 'http://minio:9000/lakehouse', warehouse = 'demo'
+```
+
+List tables in this:
+```sql
+show tables from demo;
+```
+
 Query this new table count
+
+```sql
+SELECT count(*) FROM demo.`iceberg.trips`;
+```
+
+You can also directly read the tables in s3 path bypassing the catalog all together.
 ```sql
 SELECT count(*) FROM icebergS3('http://minio:9000/lakehouse/iceberg/trips','admin','password');
 ```
@@ -200,25 +252,38 @@ It should match the count of rows in trips table
 SELECT count(*) from trips;
 ```
 
-## Flow 2: Compaction of Iceberg Tables
+## Flow 2: Partition Pruning Using Clickhouse
 
-```mermaid
-flowchart TD
-    A[Existing Iceberg Table<br/>demo.iceberg.trips]
-    B[Insert 10 New Rows<br/>Using Spark SQL]
-    C[Run Compaction<br/>Using System Procedure]
-    D[New Compacted<br/>Parquet File]
-    E[MinIO<br/>iceberg/trips]
-
-    A --> B
-    B --> C
-    C --> D
-    D --> E
+Run the following query
+```sql
+ SELECT count(*) FROM demo.`iceberg.trips` WHERE payment_type = '3';
 ```
 
-### Step 1: Create Table and Insert Data
+Since the table is partitioned on payment_type column, a suitable event would be emitted in query details.
+Note the query id in response of above query and paste it in the query below.
 
-Fire up spark sql with the necessary configurations:
+```sql
+ SELECT query_id, ProfileEvents['IcebergPartitionPrunedFiles'] as SkippedFiles, read_rows, read_bytes
+ FROM system.query_log where query_id='<query-id>' and type='QueryFinish' order by event_time desc limit 1;
+```
+Note down the No of rows read and the number of bytes read for this.
+Also note the Profile events and search for **IcebergPartitionPrunedFiles** event. 
+
+You can run the same query on unpartitioned table and it will not have the above profile event.
+```sql
+ SELECT count(*) FROM demo.`iceberg.trips` WHERE payment_type = '3';
+```
+
+What is [IcebergPartitionPrunedFiles](https://github.com/ClickHouse/ClickHouse/blob/12a8efa30af8ec6a1e905017aa7a15e27af10833/src/Common/ProfileEvents.cpp#L232) ? 
+
+IcebergPartitionPrunedFiles is a ClickHouse ProfileEvent counter that records the number of data files skipped during query planning or execution as a result of Iceberg partition pruning.
+
+
+## FLOW 2: Schema Evolution
+
+### Evolution 1: Adding a column
+
+Fire up spark sql
 
 ```shell
 docker exec -it spark-iceberg spark-sql \
@@ -230,134 +295,160 @@ docker exec -it spark-iceberg spark-sql \
   --conf spark.hadoop.fs.s3a.path.style.access=true
 ```
 
-First, create a new unpartitioned table for demonstrating compaction:
+Add a column say driver notes to the trips table.
+```sql
+ALTER TABLE demo.iceberg.trips ADD COLUMN driver_notes STRING;
+```
+
+At this point your clickhouse client will be aware of the newly added column.
+Run this in your clickhouse shell.
+```sql
+show table demo.`iceberg.trips`;
+```
+
+Now we will add a row with driver_notes using spark shell.
+```sql
+INSERT INTO demo.iceberg.trips VALUES
+(99999, TIMESTAMP '2023-07-01 10:00:00', TIMESTAMP '2023-07-01 10:30:00', -73.985, 40.748, -73.985, 40.748, 1, 5.2, 18.0, 1.0, 3.0, 0.0, 22.0, 'CRE', 'Midtown', 'Uptown', 'Great driver');
+```
+
+You can confirm it in Spark:
+```sql
+SELECT trip_id, driver_notes FROM demo.iceberg.trips WHERE trip_id = 99999;
+```
+
+You can also read this from Clickhouse:
+```sql
+select * from demo.`iceberg.trips` where trip_id=99999 format VERTICAL;
+```
+
+Note if you run the same command for a different trip: 
+```sql
+select * from demo.`iceberg.trips` where trip_id=1200853689 format VERTICAL;
+```
+The driver_notes column will be NULL.
+
+### Evolution 2: Renaming A Column:
+
+Let's rename the driver_notes column to feedback in Spark shell:
+```sql
+ALTER TABLE demo.iceberg.trips RENAME COLUMN driver_notes TO feedback;
+```
+
+At this point clickhouse will be aware of the newly added column.
+Run this in your clickhouse client.
+```sql
+show table demo.`iceberg.trips`;
+```
+You can also read this from Clickhouse:
+```sql
+select * from demo.`iceberg.trips` where trip_id=99999 format VERTICAL;
+```
+
+### Evolution 3: Deleting A Column:
+
+Let's drop the feedback column using spark shell:
+```sql
+ALTER TABLE demo.iceberg.trips DROP COLUMN feedback;
+```
+
+At this point clickhouse will be aware of the newly added column.
+Run this in your clickhouse client.
+```sql
+show table demo.`iceberg.trips`;
+```
+You can also read this from Clickhouse Client:
+```sql
+select * from demo.`iceberg.trips` where trip_id=99999 format VERTICAL;
+```
+
+### Evolution 4: Updating A Column Type:
+
+Iceberg enforces safe schema evolution, meaning:
+
+1. You can change from int → long, or float → double (widening).
+2. You cannot change from string → int (incompatible).
+3. You cannot cast down (e.g., double → float or long → int).
+
+These rules are enforced at the catalog level, using Iceberg's schema resolution rules.
+
+Let's try to cast a column passenger_count int to double. 
 
 ```sql
-CREATE TABLE demo.iceberg.trips_compact (
-    trip_id             INT,
-    pickup_datetime     TIMESTAMP,
-    dropoff_datetime    TIMESTAMP,
-    pickup_longitude    DOUBLE,
-    pickup_latitude     DOUBLE,
-    dropoff_longitude   DOUBLE,
-    dropoff_latitude    DOUBLE,
-    passenger_count     INT,
-    trip_distance       FLOAT,
-    fare_amount         FLOAT,
-    extra               FLOAT,
-    tip_amount          FLOAT,
-    tolls_amount        FLOAT,
-    total_amount        FLOAT,
-    payment_type        STRING,
-    pickup_ntaname      STRING,
-    dropoff_ntaname     STRING
-) USING ICEBERG;  -- No partitioning for clearer compaction demo
+ALTER TABLE demo.iceberg.trips ALTER COLUMN passenger_count TYPE DOUBLE;
 ```
 
-First, load the data from the parquet file (same as Flow 1):
-```sql
-INSERT INTO demo.iceberg.trips_compact
-SELECT * FROM parquet.`s3a://lakehouse/clickhouse_generated/trips.parquet`;
-```
+This will not succeed and you will be met with an error.
 
-Let's check the files created from the parquet data load:
-```sql
-SELECT file_path, file_format, record_count, file_size_in_bytes 
-FROM demo.iceberg.trips_compact.files;
-```
-```
-s3://lakehouse/iceberg/trips_compact/data/00000-2-2400d604-87ce-4088-9fb2-28365d5b99cc-0-00001.parquet  PARQUET 1048576 26048635
-s3://lakehouse/iceberg/trips_compact/data/00001-3-2400d604-87ce-4088-9fb2-28365d5b99cc-0-00001.parquet  PARQUET 1048576 25732220
-s3://lakehouse/iceberg/trips_compact/data/00002-4-2400d604-87ce-4088-9fb2-28365d5b99cc-0-00001.parquet  PARQUET 903165  22401900
-Time taken: 0.6 seconds, Fetched 3 row(s)
-```
-
-Then, insert additional rows one by one to create multiple small files for compaction:
-```sql
--- Insert rows one by one to create multiple small files
-INSERT INTO demo.iceberg.trips_compact VALUES
-(1, TIMESTAMP '2023-06-01 08:15:00', TIMESTAMP '2023-06-01 08:30:00', -73.9857, 40.7484, -73.9819, 40.7433, 1, 2.1, 10.5, 0.5, 2.0, 0.0, 13.0, '1', 'Midtown', 'Chelsea');
-
-INSERT INTO demo.iceberg.trips_compact VALUES
-(2, TIMESTAMP '2023-06-01 09:10:00', TIMESTAMP '2023-06-01 09:25:00', -73.9822, 40.7527, -73.9711, 40.7612, 2, 3.4, 14.0, 1.0, 1.5, 0.0, 16.5, '1', 'Times Square', 'Upper East Side');
-
-INSERT INTO demo.iceberg.trips_compact VALUES
-(3, TIMESTAMP '2023-06-01 10:45:00', TIMESTAMP '2023-06-01 11:10:00', -73.9948, 40.7505, -74.0059, 40.7453, 1, 1.8, 8.0, 0.5, 1.0, 0.0, 9.5, '1', 'Penn Station', 'Meatpacking');
-
--- Insert remaining rows in one batch
-INSERT INTO demo.iceberg.trips_compact VALUES
-(4, TIMESTAMP '2023-06-01 12:00:00', TIMESTAMP '2023-06-01 12:25:00', -73.9681, 40.7853, -73.9581, 40.8001, 3, 4.2, 18.0, 1.5, 2.5, 0.0, 22.0, '1', 'Upper East Side', 'Harlem'),
-(5, TIMESTAMP '2023-06-01 13:30:00', TIMESTAMP '2023-06-01 13:50:00', -73.9772, 40.7520, -73.9690, 40.7601, 2, 2.0, 9.0, 0.5, 1.2, 0.0, 10.7, '1', 'Midtown East', 'Turtle Bay'),
-(6, TIMESTAMP '2023-06-01 14:15:00', TIMESTAMP '2023-06-01 14:40:00', -73.9915, 40.7301, -73.9854, 40.7441, 1, 2.9, 11.0, 0.5, 2.0, 0.0, 13.5, '1', 'East Village', 'Gramercy'),
-(7, TIMESTAMP '2023-06-01 15:45:00', TIMESTAMP '2023-06-01 16:05:00', -73.9849, 40.7392, -73.9811, 40.7503, 1, 1.5, 7.0, 0.5, 1.0, 0.0, 8.5, '1', 'Flatiron', 'Kips Bay'),
-(8, TIMESTAMP '2023-06-01 17:10:00', TIMESTAMP '2023-06-01 17:35:00', -73.9715, 40.7643, -73.9650, 40.7751, 2, 3.2, 13.0, 1.0, 2.2, 0.0, 16.2, '1', 'Lincoln Square', 'Central Park'),
-(9, TIMESTAMP '2023-06-01 18:50:00', TIMESTAMP '2023-06-01 19:15:00', -73.9610, 40.7777, -73.9511, 40.7888, 1, 2.5, 10.0, 0.5, 1.3, 0.0, 11.8, '1', 'Upper West Side', 'Harlem'),
-(10, TIMESTAMP '2023-06-01 20:30:00', TIMESTAMP '2023-06-01 20:50:00', -73.9810, 40.7333, -73.9777, 40.7433, 2, 2.1, 9.5, 0.5, 1.8, 0.0, 11.8, '1', 'Greenwich Village', 'Chelsea');
-```
-
-Let's check how our files look after adding the small files:
-```sql
-SELECT file_path, file_format, record_count, file_size_in_bytes 
-FROM demo.iceberg.trips_compact.files;
-```
-```
-s3://lakehouse/iceberg/trips_compact/data/00000-10-aeb8f09e-a643-4667-97a2-82efe915e556-0-00001.parquet PARQUET 1       4644
-s3://lakehouse/iceberg/trips_compact/data/00001-11-aeb8f09e-a643-4667-97a2-82efe915e556-0-00001.parquet PARQUET 2       4819
-s3://lakehouse/iceberg/trips_compact/data/00002-12-aeb8f09e-a643-4667-97a2-82efe915e556-0-00001.parquet PARQUET 2       4780
-s3://lakehouse/iceberg/trips_compact/data/00003-13-aeb8f09e-a643-4667-97a2-82efe915e556-0-00001.parquet PARQUET 2       4865
-s3://lakehouse/iceberg/trips_compact/data/00000-9-3522df96-46e2-498e-ab6e-642ef9634d24-0-00001.parquet  PARQUET 1       4657
-s3://lakehouse/iceberg/trips_compact/data/00000-8-9b9418da-612f-4b53-900f-e4ee72845bd2-0-00001.parquet  PARQUET 1       4687
-s3://lakehouse/iceberg/trips_compact/data/00000-7-f637cd78-6c3b-4e15-863a-ede647df5589-0-00001.parquet  PARQUET 1       4594
-s3://lakehouse/iceberg/trips_compact/data/00000-2-2400d604-87ce-4088-9fb2-28365d5b99cc-0-00001.parquet  PARQUET 1048576 26048635
-s3://lakehouse/iceberg/trips_compact/data/00001-3-2400d604-87ce-4088-9fb2-28365d5b99cc-0-00001.parquet  PARQUET 1048576 25732220
-s3://lakehouse/iceberg/trips_compact/data/00002-4-2400d604-87ce-4088-9fb2-28365d5b99cc-0-00001.parquet  PARQUET 903165  22401900
-Time taken: 0.287 seconds, Fetched 10 row(s)
-```
-
-As we can see, we now have:
-- 3 large files (>22MB each) from the initial parquet data load
-- 7 small files (~4KB each) from our individual inserts
-This mix of large and small files makes it a perfect scenario for demonstrating compaction.
-
-### Step 2: Run Compaction
-
-Now execute the compaction procedure to optimize the data files:
+Before changing type of passenger_count to LONG, let's note the current column type in clickhouse client:  
 
 ```sql
-CALL demo.system.rewrite_data_files('demo.iceberg.trips_compact');
+ show table demo.`iceberg.trips`;
 ```
-```
-10      1       74215801        0
-Time taken: 10.104 seconds, Fetched 1 row(s)
-```
+The type is  `passenger_count` Nullable(Int32)
 
-Let's check the files after compaction:
+Now let's update the column type using Spark:
 ```sql
-SELECT file_path, file_format, record_count, file_size_in_bytes 
-FROM demo.iceberg.trips_compact.files;
-```
-```
-s3://lakehouse/iceberg/trips_compact/data/00000-16-a40066d8-eb14-4c59-b43c-573ad2928822-0-00001.parquet PARQUET 3000327 74002472
-Time taken: 0.195 seconds, Fetched 1 row(s)
+ALTER TABLE demo.iceberg.trips ALTER COLUMN passenger_count TYPE LONG;
 ```
 
-As we can see, after compaction:
-1. All 10 files (3 large + 7 small) have been combined into a single file
-2. The new file contains all records (3,000,327) and is about 74MB in size
-3. The older files will not be physically deleted from storage - only their linking will be removed from the latest manifest files, ensuring that time travel queries and rollback operations remain possible.
+Let's view the same in Clickhouse client now:
+```sql
+ show table demo.`iceberg.trips`;
+```
+The type is  `passenger_count` Nullable(Int64)
 
-### Step 3: Query the Compacted Table from ClickHouse
 
-Fire up clickhouse client:
+## FLOW 4: Time Travel
 
-```shell
-docker exec -it clickhouse clickhouse-client
+Let's insert another row using Spark Shell:
+```sql
+INSERT INTO demo.iceberg.trips VALUES
+  (99999, TIMESTAMP '2023-07-01 10:00:00', TIMESTAMP '2023-07-01 10:30:00', -73.985, 40.748, -73.985, 40.748, 1, 5.2, 18.0, 1.0, 3.0, 0.0, 22.0, 'CASH', 'Midtown', 'Uptown');
 ```
 
-Verify the data is still accessible and the count matches:
+Now let's query the latest snapshot from clickhouse client:
+```sql
+select * from demo.`iceberg.trips` where trip_id=99999 format VERTICAL;
+```
+
+This will return 2 rows.
+
+Let's travel back in time and try to query that snapshot.
+
+On your spark shell, fire this query to get snapshots ids.
+```sql
+SELECT snapshot_id, committed_at, operation FROM demo.iceberg.trips.snapshots;
+```
+
+Now on clickhouse, let's use the latest snapshot id and fire a query:
+```sql
+SELECT * FROM demo.`iceberg.trips` WHERE trip_id = 99999 SETTINGS iceberg_snapshot_id = <snapshot-id-here>;
+```
+
+### Using timestamp instead of Snapshot ids
+Clickhouse also support iceberg_timestamp_ms setting as well.
+
+Find the committed time from spark sql:
+```sql
+SELECT snapshot_id, committed_at, operation FROM demo.iceberg.trips.snapshots;
+```
+Download the latest metadata file from minio ui, and inspect the metadata file for timestamp.
 
 ```sql
-SELECT count(*) FROM icebergS3('http://minio:9000/lakehouse/iceberg/trips_compact','admin','password');
+SELECT * FROM demo.`iceberg.trips` WHERE trip_id = 99999 SETTINGS iceberg_timestamp_ms = <timestamp-here> format vertical;
 ```
 
-The count should show all 10 rows we added, now stored in fewer, more optimally sized files.
+This shows you can traverse the snapshots using clickhouse.
+
+Note: If you alter columns in between, clickhouse will not be aware of that.
+You can add the driver_notes column again, and see if it shows up.
+
+Spark sql :
+```sql
+ALTER TABLE demo.iceberg.trips ADD COLUMN driver_notes STRING;
+```
+Clickhouse sql:
+```sql
+ SELECT * FROM demo.`iceberg.trips` WHERE trip_id = 99999 SETTINGS iceberg_snapshot_id = <snapshot id> format vertical;
+```
