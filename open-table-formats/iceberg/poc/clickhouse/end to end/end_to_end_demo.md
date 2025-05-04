@@ -3,7 +3,7 @@ Source: https://www.e6data.com/blog/iceberg-metadata-evolution-after-compaction
 
 Note: This requires a bit more memory so it is advised to increase your colima/docker desktop memory limits.
 ```shell
-colima start --cpu 4 --memory 8
+colima start --cpu 6 --memory 12
 ```
 
 ### Docker Setup
