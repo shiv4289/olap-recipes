@@ -279,7 +279,7 @@ What is [IcebergPartitionPrunedFiles](https://github.com/ClickHouse/ClickHouse/b
 IcebergPartitionPrunedFiles is a ClickHouse ProfileEvent counter that records the number of data files skipped during query planning or execution as a result of Iceberg partition pruning.
 
 
-## FLOW 2: Schema Evolution
+## FLOW 3: Schema Evolution
 
 ### Evolution 1: Adding a column
 
