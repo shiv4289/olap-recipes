@@ -254,9 +254,14 @@ SELECT count(*) from trips;
 
 ## Flow 2: Partition Pruning Using Clickhouse
 
+Set the following experimental feature as on:
+```sql
+set use_iceberg_partition_pruning=1;
+```
+
 Run the following query
 ```sql
- SELECT count(*) FROM demo.`iceberg.trips` WHERE payment_type = '3';
+ SELECT count(*) FROM demo.`iceberg.trips` WHERE payment_type = '1';
 ```
 
 Since the table is partitioned on payment_type column, a suitable event would be emitted in query details.
@@ -271,7 +276,7 @@ Also note the Profile events and search for **IcebergPartitionPrunedFiles** even
 
 You can run the same query on unpartitioned table and it will not have the above profile event.
 ```sql
- SELECT count(*) FROM demo.`iceberg.trips` WHERE payment_type = '3';
+ SELECT count(*) FROM demo.`iceberg.trips_unpartitioned` WHERE payment_type = '1';
 ```
 
 What is [IcebergPartitionPrunedFiles](https://github.com/ClickHouse/ClickHouse/blob/12a8efa30af8ec6a1e905017aa7a15e27af10833/src/Common/ProfileEvents.cpp#L232) ? 
@@ -423,7 +428,7 @@ SELECT snapshot_id, committed_at, operation FROM demo.iceberg.trips.snapshots;
 
 Now on clickhouse, let's use the latest snapshot id and fire a query:
 ```sql
-SELECT * FROM demo.`iceberg.trips` WHERE trip_id = 99999 SETTINGS iceberg_snapshot_id = <snapshot-id-here>;
+SELECT * FROM demo.`iceberg.trips` WHERE trip_id = 99999 SETTINGS iceberg_snapshot_id = <snapshot-id-here> format VERTICAL;
 ```
 
 ### Using timestamp instead of Snapshot ids
