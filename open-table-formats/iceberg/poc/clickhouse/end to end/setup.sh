@@ -59,5 +59,7 @@ fi
 echo "Starting Docker Compose..."
 docker-compose up -d
 
+sleep 5
+
 echo "Inserting data into clickhouse table"
 docker exec -it clickhouse /bin/sh -c "cd /var/lib/clickhouse && chmod +x ./init-clickhouse.sh && ./init-clickhouse.sh"
