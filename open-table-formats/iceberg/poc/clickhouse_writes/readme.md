@@ -159,7 +159,7 @@ username: minio
 password: ClickHouse_Minio_P@ssw0rd
 ```
 
-Navigate to warehouse-rest/iceberg/trips and download the latest metadata.json file. It will contain all the snapshots.
+Navigate to warehouse-rest/iceberg/trips/metadata and download the latest metadata.json file. It will contain all the snapshots.
 
 Now on clickhouse, let's use the latest snapshot id and fire a query:
 ```sql
@@ -167,4 +167,7 @@ SELECT count(*) FROM demo.`iceberg.trips` SETTINGS iceberg_snapshot_id = <snapsh
 ```
 As you can see, for an older snapshot, the count is 2.
 
-Note: iceberg_timestamp_ms is also a setting but it doesn't work with IcebergS3 table engines.
+You can also time travel using timestamp, use field `iceberg_timestamp_ms`
+```sql
+SELECT count(*) FROM demo.`iceberg.trips` SETTINGS iceberg_timestamp_ms = <timestamp-uuid>;
+```
