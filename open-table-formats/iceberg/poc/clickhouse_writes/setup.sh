@@ -7,11 +7,39 @@ mkdir -p ./minio/data
 mkdir -p ./clickhouse_data
 mkdir -p ./olake-data
 mkdir -p ./lakehouse
+mkdir -p ./clickhouse_binary
 
 echo "Setting full access permissions..."
 sudo chmod -R 777 ./clickhouse_data
 sudo chmod -R 777 ./minio/data
 sudo chmod -R 777 ./olake-data
+
+echo "Downloading Clickhouse Binary"
+if [ ! -f ./clickhouse_binary/clickhouse ]; then
+  echo "Downloading binary"
+  mkdir -p ./clickhouse_binary
+
+  OS="$(uname -s)"
+  ARCH="$(uname -m)"
+  BASE="https://clickhouse-builds.s3.amazonaws.com/PRs/84684/644986c66e75c14a69f7723d971a63f0d5223879"
+
+  if [[ "$OS" == "Darwin" && "$ARCH" == "arm64" ]]; then
+    URL="$BASE/build_arm_darwin/clickhouse"
+  elif [[ "$OS" == "Linux" && ( "$ARCH" == "aarch64" || "$ARCH" == "arm64" ) ]]; then
+    URL="$BASE/build_arm_binary/clickhouse"
+  elif [[ "$OS" == "Linux" && ( "$ARCH" == "x86_64" || "$ARCH" == "amd64" ) ]]; then
+    URL="$BASE/build_amd_binary/clickhouse"
+  else
+    echo "Unsupported platform: $OS $ARCH"
+    exit 1
+  fi
+
+  echo "Fetching from $URL"
+  curl -L --fail -o ./clickhouse_binary/clickhouse "$URL"
+  chmod +x ./clickhouse_binary/clickhouse
+fi
+
+./clickhouse_binary/clickhouse --version
 
 
 echo "Downloading Extra jars for iceberg"

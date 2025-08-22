@@ -1,6 +1,3 @@
-### Queries
-Source: https://www.e6data.com/blog/iceberg-metadata-evolution-after-compaction
-
 Note: This requires a bit more memory so it is advised to increase your colima/docker desktop memory limits.
 ```shell
 colima start --cpu 6 --memory 15
@@ -176,6 +173,11 @@ SELECT id,precipitation,date_full,date_month,date_week_of,date_year,station_city
 FROM weather;
 ```
 
+You can verify the count using :
+```sql
+select count(*) from demo.`weather.weather`;
+```
+
 ### Step 2: Exporting ch table data as a parquet to s3. Then using spark to add the data to ch table.
 
 ```sql
@@ -234,6 +236,11 @@ INSERT INTO demo.weather.weather (date_full,date_month,date_week_of,date_year,id
 SELECT
   date_full,date_month,date_week_of,date_year,CAST(id AS INT) as id,precipitation,station_city,station_code,station_location,station_state,temperature_avg,temperature_max,temperature_min,wind_direction,wind_speed
 FROM parquet.`s3a://warehouse-rest/clickhouse_generated/weather.parquet`;
+```
+
+Verify the count from clickhouse client:
+```sql
+select count(*) from demo.`weather.weather`;
 ```
 
 ### Step 3: Writing to the same table using OLAKE connectors.
@@ -319,5 +326,10 @@ SELECT snapshot_id, committed_at, operation FROM demo.weather.weather.snapshots;
 
 Once you have those snapshot ids, you can query the iceberg table till that snapshot using the following: 
 ```sql
- elect count(*) from demo.`weather.weather` settings iceberg_snapshot_id=<snapshot-id-here>;
+ select count(*) from demo.`weather.weather` settings iceberg_snapshot_id=<snapshot-id-here>;
+```
+
+Once done, teardown the setup using
+```shell
+./teardown.sh
 ```
